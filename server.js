@@ -1,4 +1,4 @@
-// server.js — GlobalTree concise & de-duplicated (paste over existing)
+// server.js — GlobalTree concise & de-duplicated (full file)
 import express from "express";
 import path from "path";
 import fs from "fs/promises";
@@ -138,7 +138,7 @@ const CANNED = {
   ]
 };
 
-/* ---------- Robust extractor (keeps as before) ---------- */
+/* ---------- Robust extractor ---------- */
 function findFirstText(obj, opts = { minLen: 1 }) {
   const visited = new WeakSet();
   function isLikelyText(s) { return typeof s === "string" && s.trim().length >= (opts.minLen || 1); }
@@ -148,7 +148,10 @@ function findFirstText(obj, opts = { minLen: 1 }) {
     if (typeof value !== "object") return null;
     if (visited.has(value)) return null;
     visited.add(value);
-    if (Array.isArray(value)) { for (const it of value) { const r = helper(it); if (r) return r; } return null; }
+    if (Array.isArray(value)) {
+      for (const it of value) { const r = helper(it); if (r) return r; }
+      return null;
+    }
     const preferKeys = ["text","content","outputText","output_text","message","candidates","choices","delta","output","response"];
     for (const k of preferKeys) if (k in value) { const r = helper(value[k]); if (r) return r; }
     for (const k of Object.keys(value)) { try { const r = helper(value[k]); if (r) return r; } catch (e) {} }
@@ -178,7 +181,6 @@ function sanitizeReply(reply) {
   }
   // shorten long replies to ~700 chars
   if (reply.length > 700) {
-    // try to keep first few lines or sentences
     const lines = reply.split(/\n/).filter(Boolean);
     let out = lines.slice(0, 4).join("\n");
     if (out.length > 700) out = out.slice(0, 700);
@@ -187,84 +189,94 @@ function sanitizeReply(reply) {
   return reply.trim();
 }
 
-/* ---------- Chat endpoint with canned intent routing ---------- */
+/* ---------- RATE LIMITER (basic) ---------- */
+const rateMap = new Map();
+function rateLimit(req, res, next) {
+  const ip = req.ip || req.headers['x-forwarded-for'] || 'local';
+  const now = Date.now();
+  const bucket = rateMap.get(ip) || { count: 0, ts: now };
+  if (now - bucket.ts > 60000) { bucket.count = 0; bucket.ts = now; }
+  bucket.count += 1;
+  rateMap.set(ip, bucket);
+  if (bucket.count > 240) return res.status(429).json({ error: "Rate limit exceeded" });
+  next();
+}
+app.use(rateLimit);
+app.use(cors());
+app.use(bodyParser.json({ limit: "2mb" }));
+app.use(express.static(path.resolve(__dirname)));
+
+/* ---------- CHAT ENDPOINT (FORCE CANNED SHORT REPLIES FOR COMMON INTENTS) ---------- */
 app.post("/api/chat", async (req, res) => {
   try {
     const { messages, sessionId: clientSession } = req.body || {};
-    if (!messages || !Array.isArray(messages) || messages.length === 0) return res.status(400).json({ error: "messages array is required" });
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: "messages array is required" });
+    }
 
     const sessionId = clientSession || crypto.randomBytes(8).toString("hex");
     const lastUserMessage = String(messages[messages.length - 1].content || "").trim();
 
-    // If greeting and last assistant reply was also greeting, don't repeat — return short refocus
+    // 1) GREETING: respond once per session with a short refocus message
     if (isGreeting(lastUserMessage)) {
       const lastAssist = await getLastAssistantReply(sessionId);
-      if (lastAssist && /globaltree/i.test(lastAssist)) {
-        const short = "Namaste — I'm GlobalTree's assistant. How can I help with your study-abroad question?";
+      const short = "Namaste — I'm GlobalTree's assistant. How can I help with your study-abroad question?";
+      if (!lastAssist || !/globaltree/i.test(lastAssist)) {
         await appendConversation(sessionId, { role: "assistant", content: short });
         return res.json({ message: { role: "assistant", content: short }, sessionId, meta: { intent: { intent: "greeting" }, leadSuggested: false } });
       }
-      // else proceed normally (let the model or canned logic handle the first greeting)
+      // if greeted before, return a tiny acknowledgment (no model)
+      const ack = "I've already greeted you — how can I help with your study-abroad question?";
+      return res.json({ message: { role: "assistant", content: ack }, sessionId, meta: { intent: { intent: "greeting_repeat" }, leadSuggested: false } });
     }
 
-    // CANNED ROUTING for Top Universities / Scholarships / Visa / Book Consultation
+    // 2) TOP UNIVERSITIES: canned short lists (no model)
     if (isTopUniversities(lastUserMessage)) {
       const country = detectCountry(lastUserMessage);
       const list = country ? (CANNED[country] || CANNED.global_top) : CANNED.global_top;
-      const reply = list.join("\n") + "\n\n👉 For personalised help and eligibility checks, book a free consultation with GlobalTree (we'll need name, email, phone).";
+      const reply = list.slice(0, 6).join("\n") + "\n\n👉 For personalised help and eligibility checks, book a free consultation with GlobalTree (name, email, phone).";
       await appendConversation(sessionId, { role: "assistant", content: reply });
       return res.json({ message: { role: "assistant", content: reply }, sessionId, meta: { intent: { intent: "top_universities", score: 1 }, leadSuggested: false } });
     }
 
+    // 3) SCHOLARSHIPS: canned short list
     if (isScholarships(lastUserMessage)) {
-      const reply = CANNED.scholarships_short.join("\n") + "\n\n👉 For personalised scholarship matching and deadlines, book a free consultation with GlobalTree (name, email, phone).";
+      const reply = CANNED.scholarships_short.slice(0,6).join("\n") + "\n\n👉 For scholarship matching, book a free consultation with GlobalTree (name, email, phone).";
       await appendConversation(sessionId, { role: "assistant", content: reply });
       return res.json({ message: { role: "assistant", content: reply }, sessionId, meta: { intent: { intent: "scholarships", score: 1 }, leadSuggested: false } });
     }
 
+    // 4) VISA PROCESS: canned steps
     if (isVisaProcess(lastUserMessage)) {
-      const reply = CANNED.visa_process_short.join("\n") + "\n\n👉 For a step-by-step application checklist and timeline, book a free consultation with GlobalTree (name, email, phone).";
+      const reply = CANNED.visa_process_short.join("\n") + "\n\n👉 For a step-by-step checklist, book a free consultation with GlobalTree (name, email, phone).";
       await appendConversation(sessionId, { role: "assistant", content: reply });
       return res.json({ message: { role: "assistant", content: reply }, sessionId, meta: { intent: { intent: "visa", score: 1 }, leadSuggested: true } });
     }
 
+    // 5) BOOK CONSULTATION: server enforces concise booking prompt
     if (isBookConsult(lastUserMessage)) {
       const bookingPrompt = "Great — to book a free consultation please share: 1) full name, 2) email, 3) phone number. A GlobalTree counselor will contact you within 24 hours.";
       await appendConversation(sessionId, { role: "assistant", content: bookingPrompt });
       return res.json({ message: { role: "assistant", content: bookingPrompt }, sessionId, meta: { intent: { intent: "lead", score: 1 }, leadSuggested: true } });
     }
 
-    // Otherwise call Gemini but sanitize output and dedupe
+    // 6) FALLBACK: call Gemini for anything else, but sanitize and trim its reply
     const history = messages.slice(0, -1).map(msg => ({ role: msg.role === "assistant" ? "model" : "user", parts: [{ text: String(msg.content) }] }));
     const geminiChat = ai.getGenerativeModel({ model: RELIABLE_MODEL, config: { systemInstruction, responseModalities: ["TEXT"] } }).startChat({ history });
     let response = await geminiChat.sendMessage(lastUserMessage);
-
-    // extract and sanitize
     let reply = extractTextFromGeminiResponse(response) || "";
     reply = sanitizeReply(reply);
 
-    // server override for lead-like but ensure concise booking prompt
-    const intent = detectIntent(lastUserMessage || "");
-    if ((intent.intent === "lead" || (intent.intent === "visa" && intent.score >= 0.8))) {
-      const bookingPrompt = "Great — to book a free consultation please share: 1) full name, 2) email, 3) phone number. A GlobalTree counselor will contact you within 24 hours.";
-      // if reply already asks for those fields, keep short; otherwise set bookingPrompt
-      const lower = reply.toLowerCase();
-      const asksForFields = lower.includes("name") && lower.includes("email") && lower.includes("phone");
-      if (!asksForFields) reply = bookingPrompt;
-      else reply = reply.split("\n").slice(0, 6).join("\n") + "\n\n" + bookingPrompt;
-    }
-
-    // Prevent duplicate assistant replies in conversation store
+    // Prevent duplicate assistant replies
     const lastAssist = await getLastAssistantReply(sessionId);
     if (lastAssist && lastAssist.trim() === reply.trim()) {
-      // avoid repeating exactly same message — acknowledge briefly instead
       const ack = "I've already shared that — would you like help booking a consultation?";
       await appendConversation(sessionId, { role: "assistant", content: ack });
-      return res.json({ message: { role: "assistant", content: ack }, sessionId, meta: { intent, leadSuggested: intent.intent === "lead" } });
+      return res.json({ message: { role: "assistant", content: ack }, sessionId, meta: { intent: detectIntent(lastUserMessage), leadSuggested: false } });
     }
 
     await appendConversation(sessionId, { role: "assistant", content: reply });
-    return res.json({ message: { role: "assistant", content: reply }, sessionId, meta: { intent, leadSuggested: intent.intent === "lead" || intent.intent === "visa" } });
+    return res.json({ message: { role: "assistant", content: reply }, sessionId, meta: { intent: detectIntent(lastUserMessage) } });
 
   } catch (err) {
     console.error("Chat error:", err);

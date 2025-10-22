@@ -69,7 +69,6 @@
     function quickAlreadyShown() { return !!el.body.querySelector('.gt-quick'); }
 
     function renderBulletText(container, text) {
-      // If incoming text contains lines starting with • or -, render as ul
       const lines = text.split("\n").map(s => s.trim()).filter(Boolean);
       const bullets = lines.filter(l => l.startsWith("•") || l.startsWith("-"));
       if (bullets.length) {
@@ -81,7 +80,6 @@
           ul.appendChild(li);
         });
         container.appendChild(ul);
-        // append any trailing non-bullet lines as small text
         const other = lines.filter(l => !l.startsWith("•") && !l.startsWith("-"));
         other.forEach(o => {
           const p = document.createElement("div");
@@ -161,18 +159,20 @@
           sessionId = returnedSession; sessionStorage.setItem("gt_sessionId", sessionId);
         }
 
-        const lastMsg = messages.length ? messages[messages.length - 1] : null;
         const incomingContent = (message && message.content) ? message.content.trim() : "";
 
-        if (!lastMsg || lastMsg.role !== "assistant" || lastMsg.content.trim() !== incomingContent) {
+        // prevent duplicate assistant message in UI
+        const lastAssistIndex = [...messages].reverse().findIndex(m => m.role === "assistant");
+        const lastAssist = lastAssistIndex === -1 ? null : messages[messages.length - 1 - lastAssistIndex];
+        if (!(lastAssist && lastAssist.content && lastAssist.content.trim() === incomingContent)) {
           messages.push(message);
-          loading.textContent = incomingContent || "(No response)";
-          const quick = ["Top universities", "Scholarships", "Visa process", "Book consultation"];
-          addMsg("assistant", incomingContent || "", quick);
+          loading.textContent = "";
+          addMsg("assistant", incomingContent || "(No response)", ["Top universities", "Scholarships", "Visa process", "Book consultation"]);
         } else {
-          loading.textContent = incomingContent || "(No response)";
+          loading.textContent = "I've already shared that. Want to book a consultation?";
         }
 
+        // show lead prompt only once
         if (meta && meta.leadSuggested && !sessionStorage.getItem("gt_leadPromptShown")) {
           const prompt = document.createElement("div");
           prompt.id = "leadPrompt";

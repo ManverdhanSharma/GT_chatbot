@@ -1,34 +1,56 @@
 // api/handoff.js
-import path from "path";
-import fs from "fs/promises";
-import { fileURLToPath } from "url";
+import fetch from "node-fetch"; // only needed if you use Node <18 (optional on Vercel Node 18+)
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const LEADS_FILE = path.resolve(__dirname, "../leads.json");
-
-async function ensureFile(file, initial = "[]") {
-  try { await fs.access(file); } catch (e) { await fs.writeFile(file, initial, "utf8"); }
-}
-async function loadJson(file) {
-  try { await ensureFile(file); const raw = await fs.readFile(file, "utf8"); return raw.trim() ? JSON.parse(raw) : []; } catch (e) { return []; }
-}
-async function saveJson(file, obj) {
-  try { await fs.writeFile(file, JSON.stringify(obj, null, 2), "utf8"); return true; } catch (e) { return false; }
-}
+const SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwz09aVni-6Bda5TywSPOF8aQhpiWTpHKwfeyYjqZxLTzkG0DL4C15hp81mnROaCrjisA/exec";
+const SHEETS_WEBHOOK_TOKEN = process.env.SHEETS_WEBHOOK_TOKEN || "GT_CHATBOT_SECRET"; // optional security token
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
   try {
     const { sessionId, name, email, phone, note } = req.body || {};
-    if (!sessionId || !name || !email || !phone) return res.status(400).json({ error: "sessionId, name, email, phone required" });
+    if (!sessionId || !name || !email || !phone) {
+      return res
+        .status(400)
+        .json({ error: "sessionId, name, email, and phone are required" });
+    }
 
-    const leads = await loadJson(LEADS_FILE);
-    leads.push({ sessionId, name, email, phone, note: note || "", createdAt: new Date().toISOString() });
-    await saveJson(LEADS_FILE, leads);
+    // Send data to Google Sheets Web App
+    const payload = {
+      token: SHEETS_WEBHOOK_TOKEN, // same secret you set in Apps Script
+      sessionId,
+      name,
+      email,
+      phone,
+      note: note || "",
+    };
 
-    // In prod: send email/sms/CRM webhook here
-    return res.json({ ok: true, message: "Handoff requested. Our counselor will contact you shortly." });
+    const response = await fetch(SHEETS_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      console.error("❌ Google Sheets webhook error:", await response.text());
+      return res.status(500).json({
+        error: "Failed to send data to Google Sheets",
+      });
+    }
+
+    console.log("✅ Lead successfully sent to Google Sheets:", {
+      name,
+      email,
+      phone,
+    });
+
+    // Respond success to frontend
+    return res.json({
+      ok: true,
+      message: "Handoff requested. Our counselor will contact you shortly.",
+    });
   } catch (e) {
     console.error("handoff error:", e);
     return res.status(500).json({ error: "handoff failed" });

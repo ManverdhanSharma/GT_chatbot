@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>GlobalTree — Chat</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin: 0; padding: 24px; background:#f7fafc; }
+    .gt-toggle { position:fixed; right:24px; bottom:24px; z-index:9999; background:#0f172a; color:#fff; border-radius:999px; padding:12px 16px; cursor:pointer; box-shadow: 0 8px 20px rgba(0,0,0,0.12); border:none; }
+    .gt-panel { position:fixed; right:24px; bottom:80px; width:380px; max-width:95%; background:#fff; border-radius:12px; box-shadow:0 10px 30px rgba(2,6,23,0.12); display:none; flex-direction:column; overflow:hidden; z-index:9998; }
+    .gt-header { padding:12px 14px; font-weight:700; border-bottom:1px solid #eef2ff; background:#fff; display:flex; align-items:center; justify-content:space-between; }
+    .gt-body { padding:12px; height:360px; overflow:auto; background: linear-gradient(180deg,#ffffff 0%,#fbfdff 100%); }
+    .gt-footer { padding:10px; border-top:1px solid #f1f5f9; display:flex; gap:8px; align-items:center; background:#fff; }
+    .gt-input { flex:1; padding:8px 10px; border-radius:10px; border:1px solid #e6eef8; outline:none; font-size:14px; }
+    .gt-send { padding:8px 12px; border-radius:10px; border:none; background:#0f172a; color:#fff; cursor:pointer; }
+    .gt-msg { margin-bottom:10px; padding:8px 12px; border-radius:10px; max-width:85%; line-height:1.3; }
+    .gt-user { background:#eef2ff; margin-left:auto; text-align:right; }
+    .gt-bot { background:#f8fafc; margin-right:auto; text-align:left; }
+    .gt-quick { margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; }
+    .gt-quick button { padding:6px 8px; border-radius:8px; border:1px solid #e6eef8; background:#fff; cursor:pointer; font-size:13px; }
+    .typing span { display:inline-block; width:6px; height:6px; margin:0 2px; border-radius:50%; background:#cbd5e1; animation: blink 1s infinite; }
+    .typing span:nth-child(2) { animation-delay: .2s } .typing span:nth-child(3) { animation-delay: .4s }
+    @keyframes blink { 0% { opacity:.2 } 50% { opacity:1 } 100% { opacity:.2 } }
+    #leadPrompt { padding:10px; background:#fff7ed; border-left:4px solid #f97316; border-radius:8px; margin-bottom:10px; }
+    .gt-contact { padding:8px 10px; border-radius:8px; border:none; background:#f97316; color:#fff; cursor:pointer; }
+    ul.gt-bullets { margin:6px 0; padding-left:18px; }
+    ul.gt-bullets li { margin-bottom:6px; }
+  </style>
+</head>
+<body>
+  <button id="gtToggle" class="gt-toggle">GlobalTree</button>
+
+  <div id="gtPanel" class="gt-panel" role="dialog" aria-label="Chat widget">
+    <div class="gt-header">
+      <div>
+        <div style="font-size:14px">GlobalTree — Study abroad guidance</div>
+        <div style="font-size:12px;color:#6b7280">Expert advice on admissions, visas & scholarships</div>
+      </div>
+      <button id="gtClose" style="border:none;background:transparent;cursor:pointer;">✕</button>
+    </div>
+
+    <div id="gtBody" class="gt-body"></div>
+
+    <div id="gtFooter" class="gt-footer">
+      <input id="gtInput" class="gt-input" placeholder="Ask about programs, fees, visas..." />
+      <button id="gtSend" class="gt-send">Send</button>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = location.hostname.includes("localhost") || location.hostname.includes("127.0.0.1") ? "http://localhost:8081" : "";
+
+    const el = {
+      toggle: document.getElementById("gtToggle"),
+      panel: document.getElementById("gtPanel"),
+      body: document.getElementById("gtBody"),
+      input: document.getElementById("gtInput"),
+      send: document.getElementById("gtSend"),
+      close: document.getElementById("gtClose"),
+      footer: document.getElementById("gtFooter")
+    };
+
+    let sessionId = sessionStorage.getItem("gt_sessionId");
+    if (!sessionId) { sessionId = Math.random().toString(36).slice(2,12); sessionStorage.setItem("gt_sessionId", sessionId); }
+
+    let messages = [];
+    let isLoading = false;
+
+    function quickAlreadyShown() { return !!el.body.querySelector('.gt-quick'); }
+
+    function renderBulletText(container, text) {
+      // If incoming text contains lines starting with • or -, render as ul
+      const lines = text.split("\n").map(s => s.trim()).filter(Boolean);
+      const bullets = lines.filter(l => l.startsWith("•") || l.startsWith("-"));
+      if (bullets.length) {
+        const ul = document.createElement("ul");
+        ul.className = "gt-bullets";
+        bullets.forEach(b => {
+          const li = document.createElement("li");
+          li.textContent = b.replace(/^•\s?|- /, "").trim();
+          ul.appendChild(li);
+        });
+        container.appendChild(ul);
+        // append any trailing non-bullet lines as small text
+        const other = lines.filter(l => !l.startsWith("•") && !l.startsWith("-"));
+        other.forEach(o => {
+          const p = document.createElement("div");
+          p.textContent = o;
+          container.appendChild(p);
+        });
+        return true;
+      }
+      return false;
+    }
+
+    function addMsg(role, text, withQuick = null) {
+      const div = document.createElement("div");
+      div.className = "gt-msg " + (role === "user" ? "gt-user" : "gt-bot");
+
+      const rendered = renderBulletText(div, text);
+      if (!rendered) div.appendChild(document.createTextNode(text));
+
+      el.body.appendChild(div);
+
+      if (withQuick && Array.isArray(withQuick) && withQuick.length && !quickAlreadyShown()) {
+        const qwrap = document.createElement("div");
+        qwrap.className = "gt-quick";
+        withQuick.forEach(q => {
+          const b = document.createElement("button");
+          b.textContent = q;
+          b.addEventListener("click", () => {
+            el.input.value = q;
+            onSend();
+          });
+          qwrap.appendChild(b);
+        });
+        el.body.appendChild(qwrap);
+      }
+
+      el.body.scrollTop = el.body.scrollHeight;
+      return div;
+    }
+
+    function addTyping() {
+      const div = document.createElement("div");
+      div.className = "gt-msg gt-bot";
+      div.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+      el.body.appendChild(div);
+      el.body.scrollTop = el.body.scrollHeight;
+      return div;
+    }
+
+    async function sendToAPI(payload) {
+      const res = await fetch(`${API_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "HTTP " + res.status);
+      return json;
+    }
+
+    async function onSend() {
+      const text = el.input.value.trim();
+      if (!text || isLoading) return;
+      el.input.value = "";
+      isLoading = true;
+      el.send.disabled = true;
+
+      messages.push({ role: "user", content: text });
+      addMsg("user", text);
+      const loading = addTyping();
+
+      try {
+        const payload = { messages, sessionId };
+        const response = await sendToAPI(payload);
+        const { message, meta, sessionId: returnedSession } = response;
+
+        if (returnedSession && returnedSession !== sessionId) {
+          sessionId = returnedSession; sessionStorage.setItem("gt_sessionId", sessionId);
+        }
+
+        const lastMsg = messages.length ? messages[messages.length - 1] : null;
+        const incomingContent = (message && message.content) ? message.content.trim() : "";
+
+        if (!lastMsg || lastMsg.role !== "assistant" || lastMsg.content.trim() !== incomingContent) {
+          messages.push(message);
+          loading.textContent = incomingContent || "(No response)";
+          const quick = ["Top universities", "Scholarships", "Visa process", "Book consultation"];
+          addMsg("assistant", incomingContent || "", quick);
+        } else {
+          loading.textContent = incomingContent || "(No response)";
+        }
+
+        if (meta && meta.leadSuggested && !sessionStorage.getItem("gt_leadPromptShown")) {
+          const prompt = document.createElement("div");
+          prompt.id = "leadPrompt";
+          prompt.innerHTML = `<div><strong>Looks like you want help getting started.</strong><div style="margin-top:6px">To book a free consultation, please share your name, email and phone when prompted.</div></div>`;
+          const btn = document.createElement("button");
+          btn.className = "gt-contact";
+          btn.textContent = "Book a free consult";
+          btn.style.marginLeft = "8px";
+          btn.addEventListener("click", showLeadForm);
+          prompt.appendChild(btn);
+          el.body.appendChild(prompt);
+          el.body.scrollTop = el.body.scrollHeight;
+          sessionStorage.setItem("gt_leadPromptShown", "1");
+        }
+
+      } catch (e) {
+        console.error(e);
+        const last = el.body.lastElementChild;
+        if (last && last.className.includes("gt-bot") && last.querySelector(".typing")) {
+          last.textContent = "⚠️ Error: " + e.message;
+        } else {
+          addMsg("assistant", "⚠️ Error: " + e.message);
+        }
+        messages.pop();
+      } finally {
+        isLoading = false;
+        el.send.disabled = false;
+      }
+    }
+
+    function showLeadForm() {
+      if (document.getElementById("gtLeadForm")) return;
+      const wrapper = document.createElement("div");
+      wrapper.id = "gtLeadForm";
+      wrapper.style.position = "absolute";
+      wrapper.style.left = "16px";
+      wrapper.style.right = "16px";
+      wrapper.style.bottom = "72px";
+      wrapper.style.background = "#fff";
+      wrapper.style.border = "1px solid #e6e6e6";
+      wrapper.style.borderRadius = "12px";
+      wrapper.style.padding = "12px";
+      wrapper.style.boxShadow = "0 6px 20px rgba(0,0,0,0.12)";
+      wrapper.style.zIndex = 99999;
+
+      wrapper.innerHTML = `
+        <div style="font-weight:700;margin-bottom:8px">Book a free consultation</div>
+        <input id="leadName" placeholder="Full name" style="width:100%;padding:8px;margin-bottom:8px;border-radius:8px;border:1px solid #ddd"/>
+        <input id="leadEmail" placeholder="Email" type="email" style="width:100%;padding:8px;margin-bottom:8px;border-radius:8px;border:1px solid #ddd"/>
+        <input id="leadPhone" placeholder="Phone number" type="tel" style="width:100%;padding:8px;margin-bottom:8px;border-radius:8px;border:1px solid #ddd"/>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+          <button id="leadSkip" style="padding:8px 12px;border-radius:8px;background:#f3f4f6;border:none;">Skip</button>
+          <button id="leadSubmit" style="padding:8px 12px;border-radius:8px;background:#0f172a;color:#fff;border:none;">Request callback</button>
+        </div>
+      `;
+      document.body.appendChild(wrapper);
+      document.getElementById("leadSkip").addEventListener("click", () => wrapper.remove());
+      document.getElementById("leadSubmit").addEventListener("click", async () => {
+        const name = document.getElementById("leadName").value.trim();
+        const email = document.getElementById("leadEmail").value.trim();
+        const phone = document.getElementById("leadPhone").value.trim();
+        if (!name || !email || !phone) {
+          addMsg("assistant", "⚠️ Please enter name, email, and phone to request callback.");
+          return;
+        }
+        try {
+          const resp = await fetch(`${API_BASE}/api/handoff`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, name, email, phone, note: "Requested via widget" }),
+          });
+          const j = await resp.json();
+          if (!resp.ok) throw new Error(j.error || "Failed");
+          addMsg("assistant", j.message || "Thanks — we've requested a counselor to contact you.");
+        } catch (err) {
+          console.error(err);
+          addMsg("assistant", "⚠️ Couldn't submit request. Please try again later.");
+        } finally {
+          wrapper.remove();
+        }
+      });
+    }
+
+    el.toggle.addEventListener("click", () => {
+      const visible = el.panel.style.display === "flex";
+      el.panel.style.display = visible ? "none" : "flex";
+      if (!visible && el.body.childElementCount === 0) {
+        addMsg("assistant", "👋 Namaste — I'm GlobalTree's assistant. How can I help with your study-abroad question?");
+      }
+      if (!visible) el.input.focus();
+    });
+    el.close.addEventListener("click", () => el.panel.style.display = "none");
+    el.send.addEventListener("click", onSend);
+    el.input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); } });
+
+    (function addContactBtn() {
+      if (document.getElementById("gtContactBtn")) return;
+      const btn = document.createElement("button");
+      btn.id = "gtContactBtn";
+      btn.textContent = "Contact";
+      btn.style.padding = "8px 10px";
+      btn.style.borderRadius = "8px";
+      btn.style.border = "1px solid #ddd";
+      btn.style.background = "#fff";
+      btn.style.cursor = "pointer";
+      btn.addEventListener("click", showLeadForm);
+      el.footer.insertBefore(btn, el.footer.firstChild);
+    })();
+  </script>
+</body>
+</html>

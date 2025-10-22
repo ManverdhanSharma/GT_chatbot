@@ -1,58 +1,35 @@
-// api/handoff.js
-import fetch from "node-fetch"; // only needed if you use Node <18 (optional on Vercel Node 18+)
-
-const SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwz09aVni-6Bda5TywSPOF8aQhpiWTpHKwfeyYjqZxLTzkG0DL4C15hp81mnROaCrjisA/exec";
-const SHEETS_WEBHOOK_TOKEN = process.env.SHEETS_WEBHOOK_TOKEN || "GT_CHATBOT_SECRET"; // optional security token
+// api/handoff.js (DEBUG version - temporary)
+const SHEETS_WEBHOOK_URL = process.env.SHEETS_WEBHOOK_URL || "https://script.google.com/macros/s/AKfycbwz09aVni-6Bda5TywSPOF8aQhpiWTpHKwfeyYjqZxLTzkG0DL4C15hp81mnROaCrjisA/exec";
+const SHEETS_WEBHOOK_TOKEN = process.env.SHEETS_WEBHOOK_TOKEN || "GT_CHATBOT_SECRET";
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
     const { sessionId, name, email, phone, note } = req.body || {};
-    if (!sessionId || !name || !email || !phone) {
-      return res
-        .status(400)
-        .json({ error: "sessionId, name, email, and phone are required" });
-    }
+    if (!sessionId || !name || !email || !phone) return res.status(400).json({ error: "sessionId, name, email, phone required" });
 
-    // Send data to Google Sheets Web App
-    const payload = {
-      token: SHEETS_WEBHOOK_TOKEN, // same secret you set in Apps Script
-      sessionId,
-      name,
-      email,
-      phone,
-      note: note || "",
-    };
+    const payload = { token: SHEETS_WEBHOOK_TOKEN, sessionId, name, email, phone, note: note || "" };
 
-    const response = await fetch(SHEETS_WEBHOOK_URL, {
+    // call Apps Script webhook
+    const r = await fetch(SHEETS_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
-    if (!response.ok) {
-      console.error("❌ Google Sheets webhook error:", await response.text());
-      return res.status(500).json({
-        error: "Failed to send data to Google Sheets",
-      });
-    }
+    const text = await r.text(); // raw response body (may be JSON, HTML, or error text)
 
-    console.log("✅ Lead successfully sent to Google Sheets:", {
-      name,
-      email,
-      phone,
+    // Return full details so we can inspect in browser / logs
+    return res.status(200).json({
+      ok: r.ok,
+      status: r.status,
+      statusText: r.statusText,
+      body: text
     });
 
-    // Respond success to frontend
-    return res.json({
-      ok: true,
-      message: "Handoff requested. Our counselor will contact you shortly.",
-    });
-  } catch (e) {
-    console.error("handoff error:", e);
-    return res.status(500).json({ error: "handoff failed" });
+  } catch (err) {
+    console.error("handoff debug error:", err);
+    return res.status(500).json({ error: String(err) });
   }
 }

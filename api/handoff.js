@@ -1,58 +1,47 @@
-// api/handoff.js
-import fetch from "node-fetch"; // only needed if you use Node <18 (optional on Vercel Node 18+)
-
-const SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwz09aVni-6Bda5TywSPOF8aQhpiWTpHKwfeyYjqZxLTzkG0DL4C15hp81mnROaCrjisA/exec";
-const SHEETS_WEBHOOK_TOKEN = process.env.SHEETS_WEBHOOK_TOKEN || "GT_CHATBOT_SECRET"; // optional security token
+// api/handoff.js (temporary debug - returns full details)
+const SHEETS_WEBHOOK_URL = process.env.SHEETS_WEBHOOK_URL;
+const SHEETS_WEBHOOK_TOKEN = process.env.SHEETS_WEBHOOK_TOKEN;
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
     const { sessionId, name, email, phone, note } = req.body || {};
     if (!sessionId || !name || !email || !phone) {
-      return res
-        .status(400)
-        .json({ error: "sessionId, name, email, and phone are required" });
+      return res.status(400).json({ error: "Missing required fields", required: ["sessionId","name","email","phone"] });
     }
 
-    // Send data to Google Sheets Web App
-    const payload = {
-      token: SHEETS_WEBHOOK_TOKEN, // same secret you set in Apps Script
-      sessionId,
-      name,
-      email,
-      phone,
-      note: note || "",
-    };
+    if (!SHEETS_WEBHOOK_URL) {
+      return res.status(500).json({ error: "missing-env", details: "SHEETS_WEBHOOK_URL is not set in environment" });
+    }
+    if (!SHEETS_WEBHOOK_TOKEN) {
+      return res.status(500).json({ error: "missing-env", details: "SHEETS_WEBHOOK_TOKEN is not set in environment" });
+    }
 
-    const response = await fetch(SHEETS_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const payload = { token: SHEETS_WEBHOOK_TOKEN, sessionId, name, email, phone, note: note || "" };
 
-    if (!response.ok) {
-      console.error("❌ Google Sheets webhook error:", await response.text());
-      return res.status(500).json({
-        error: "Failed to send data to Google Sheets",
+    let response;
+    try {
+      response = await fetch(SHEETS_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
+    } catch (fetchErr) {
+      // network / invalid URL / runtime fetch error
+      return res.status(500).json({ error: "fetch-failed", details: String(fetchErr) });
     }
 
-    console.log("✅ Lead successfully sent to Google Sheets:", {
-      name,
-      email,
-      phone,
+    const text = await response.text().catch(e => String(e));
+
+    return res.status(200).json({
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      sheetResponseBody: text
     });
 
-    // Respond success to frontend
-    return res.json({
-      ok: true,
-      message: "Handoff requested. Our counselor will contact you shortly.",
-    });
   } catch (e) {
-    console.error("handoff error:", e);
-    return res.status(500).json({ error: "handoff failed" });
+    return res.status(500).json({ error: "function-crashed", details: String(e) });
   }
 }
